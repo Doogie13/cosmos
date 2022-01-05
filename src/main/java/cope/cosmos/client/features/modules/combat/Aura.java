@@ -9,15 +9,14 @@ import cope.cosmos.client.events.TotemPopEvent;
 import cope.cosmos.client.features.modules.Category;
 import cope.cosmos.client.features.modules.Module;
 import cope.cosmos.client.features.setting.Setting;
-import cope.cosmos.client.manager.managers.SocialManager.*;
+import cope.cosmos.client.manager.managers.InventoryManager.Switch;
+import cope.cosmos.client.manager.managers.SocialManager.Relationship;
 import cope.cosmos.client.manager.managers.TickManager.TPS;
 import cope.cosmos.util.client.ColorUtil;
 import cope.cosmos.util.client.StringFormatter;
-import cope.cosmos.util.combat.TargetUtil.Target;
+import cope.cosmos.util.combat.EnemyUtil;
 import cope.cosmos.util.player.InventoryUtil;
-import cope.cosmos.util.player.InventoryUtil.Switch;
 import cope.cosmos.util.player.PlayerUtil;
-import cope.cosmos.util.player.PlayerUtil.Hand;
 import cope.cosmos.util.player.Rotation;
 import cope.cosmos.util.player.Rotation.Rotate;
 import cope.cosmos.util.render.RenderBuilder;
@@ -25,17 +24,19 @@ import cope.cosmos.util.render.RenderUtil;
 import cope.cosmos.util.system.Timer;
 import cope.cosmos.util.system.Timer.Format;
 import cope.cosmos.util.world.AngleUtil;
+import cope.cosmos.util.world.EntityUtil;
 import cope.cosmos.util.world.InterpolationUtil;
 import cope.cosmos.util.world.RaytraceUtil;
-import cope.cosmos.util.world.TeleportUtil;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityEnderCrystal;
+import net.minecraft.entity.item.EntityExpBottle;
+import net.minecraft.entity.item.EntityItem;
+import net.minecraft.entity.item.EntityXPOrb;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Items;
 import net.minecraft.item.Item;
-import net.minecraft.network.play.client.CPacketEntityAction;
-import net.minecraft.network.play.client.CPacketHeldItemChange;
-import net.minecraft.network.play.client.CPacketPlayerDigging;
+import net.minecraft.network.play.client.*;
+import net.minecraft.util.EnumHand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -174,6 +175,16 @@ public class Aura extends Module {
                     continue;
                 }
 
+                // should not be attacking items
+                if (entity instanceof EntityItem || entity instanceof EntityExpBottle || entity instanceof EntityXPOrb) {
+                    continue;
+                }
+
+                // verify target
+                if (entity instanceof EntityPlayer && !targetPlayers.getValue() || EntityUtil.isPassiveMob(entity) && !targetPassives.getValue() || EntityUtil.isNeutralMob(entity) && !targetNeutrals.getValue() || EntityUtil.isHostileMob(entity) && !targetHostiles.getValue()) {
+                    continue;
+                }
+
                 // distance to the entity
                 double distance = mc.player.getDistance(entity);
 
@@ -193,14 +204,14 @@ public class Aura extends Module {
                 }
 
                 // check if it's in range
-                boolean wallAttack = !RaytraceUtil.raytraceEntity(entity, traceOffset) && raytrace.getValue();
+                boolean wallAttack = RaytraceUtil.isNotVisible(entity, traceOffset) && raytrace.getValue();
                 if (distance > (wallAttack ? wallsRange.getValue() : range.getValue())) {
                     continue;
                 }
 
                 // make sure the entity is truly visible, useful for strict anticheats
-                float[] attackAngles = AngleUtil.calculateAngles(entity.getPositionVector());
-                if (AngleUtil.calculateAngleDifference(mc.player.rotationYaw, attackAngles[0]) > fov.getValue()) {
+                Rotation attackAngles = AngleUtil.calculateAngles(entity.getPositionVector());
+                if ((Math.abs(mc.player.rotationYaw - attackAngles.getYaw()) % 180) > fov.getValue()) {
                     continue;
                 }
 
@@ -209,13 +220,34 @@ public class Aura extends Module {
                     continue;
                 }
 
+                // check hurt resistance time
+                if (timing.getValue().equals(Timing.SEQUENTIAL)) {
+                    if (entity.hurtResistantTime > 0) {
+                        continue;
+                    }
+                }
+
                 // there is at least one player that is attackable
                 if (!playerBias && entity instanceof EntityPlayer) {
                     playerBias = true;
                 }
 
+                // calculate priority (minimize)
+                double heuristic = 0;
+                switch (target.getValue()) {
+                    case LOWEST_HEALTH:
+                        heuristic = EnemyUtil.getHealth(entity);
+                        break;
+                    case LOWEST_ARMOR:
+                        heuristic = EnemyUtil.getArmor(entity);
+                        break;
+                    case CLOSEST:
+                        heuristic = distance;
+                        break;
+                }
+
                 // add potential target to our map
-                attackTargets.put(distance, entity);
+                attackTargets.put(heuristic, entity);
             }
 
             if (!attackTargets.isEmpty()) {
@@ -237,8 +269,8 @@ public class Aura extends Module {
                 }
 
                 else {
-                    // closest target is the last entry
-                    auraTarget = attackTargets.lastEntry().getValue();
+                    // best target is the first entry
+                    auraTarget = attackTargets.firstEntry().getValue();
                 }
             }
 
@@ -262,17 +294,17 @@ public class Aura extends Module {
 
                 // check our distance to the entity as it could have changed since we last calculated our target
                 // we also check if the Aura target is dead, which will also make the target invalid
-                boolean wallAttack = !RaytraceUtil.raytraceEntity(auraTarget, traceOffset) && raytrace.getValue();
+                boolean wallAttack = RaytraceUtil.isNotVisible(auraTarget, traceOffset) && raytrace.getValue();
                 if (auraTarget.isDead || mc.player.getDistance(auraTarget) > (wallAttack ? wallsRange.getValue() : range.getValue())) {
                     auraTarget = null; // set our target to null, as it is now invalid
                     return;
                 }
 
                 // switch to our weapon
-                InventoryUtil.switchToSlot(weapon.getValue().getItem(), autoSwitch.getValue());
+                getCosmos().getInventoryManager().switchToItem(weapon.getValue().getItem(), autoSwitch.getValue());
 
                 // make sure we are holding our weapon
-                if (!InventoryUtil.isHolding(weapon.getValue().getItem()) && weaponOnly.getValue() || !InventoryUtil.isHolding32k() && weaponThirtyTwoK.getValue()) {
+                if (!InventoryUtil.isHolding(weapon.getValue().getItem()) && weaponOnly.getValue() || InventoryUtil.getHighestEnchantLevel() <= 1000 && weaponThirtyTwoK.getValue()) {
                     return;
                 }
 
@@ -281,7 +313,9 @@ public class Aura extends Module {
 
                 // teleport to our target, rarely works on an actual server
                 if (teleport.getValue()) {
-                    TeleportUtil.teleportPlayer(auraTarget.posX, auraTarget.posY, auraTarget.posZ);
+                    mc.player.setVelocity(0, 0, 0);
+                    mc.player.setPosition(auraTarget.posX, auraTarget.posY, auraTarget.posZ);
+                    mc.player.connection.sendPacket(new CPacketPlayer.Position(auraTarget.posX, auraTarget.posY, auraTarget.posZ, true));
                 }
 
                 if (!rotate.getValue().equals(Rotate.NONE)) {
@@ -302,12 +336,12 @@ public class Aura extends Module {
 
                     // update client rotations
                     if (rotate.getValue().equals(Rotate.CLIENT)) {
-                        float[] attackAngles = AngleUtil.calculateAngles(attackVector);
+                        Rotation attackAngles = AngleUtil.calculateAngles(attackVector);
 
                         // update our players rotation
-                        mc.player.rotationYaw = attackAngles[0];
-                        mc.player.rotationYawHead = attackAngles[0];
-                        mc.player.rotationPitch = attackAngles[1];
+                        mc.player.rotationYaw = attackAngles.getYaw();
+                        mc.player.rotationYawHead = attackAngles.getYaw();
+                        mc.player.rotationPitch = attackAngles.getPitch();
                     }
                 }
 
@@ -381,12 +415,11 @@ public class Aura extends Module {
 
                 // if we are cleared to attack, then attack
                 if (attackCleared) {
-
                     // make sure our switch timer has cleared it's time, attacking right after switching flags Updated NCP
                     if (switchTimer.passedTime(delaySwitch.getValue().longValue(), Format.MILLISECONDS)) {
 
                         // if we passed our critical time, then we can attempt a critical attack
-                        if (criticalTimer.passedTime(300, Format.MILLISECONDS) && timing.getValue().equals(Timing.SEQUENTIAL)) {
+                        if (criticalTimer.passedTime(300, Format.MILLISECONDS)) {
 
                             // spoof our fall state to simulate a critical attack
                             mc.player.fallDistance = 0.1F;
@@ -398,14 +431,27 @@ public class Aura extends Module {
 
                         // attack the target
                         for (int i = 0; i < iterations.getValue(); i++) {
-                            getCosmos().getInteractionManager().attackEntity(auraTarget, packet.getValue(), swing.getValue(), variation.getValue());
+                            getCosmos().getInteractionManager().attackEntity(auraTarget, packet.getValue(), variation.getValue());
+                        }
+
+                        // swing our hand
+                        switch (swing.getValue()) {
+                            case MAINHAND:
+                                mc.player.swingArm(EnumHand.MAIN_HAND);
+                                break;
+                            case OFFHAND:
+                                mc.player.swingArm(EnumHand.OFF_HAND);
+                                break;
+                            case PACKET:
+                                mc.player.connection.sendPacket(new CPacketAnimation(mc.player.getHeldItemMainhand().getItem().equals(Items.END_CRYSTAL) ? EnumHand.MAIN_HAND : EnumHand.OFF_HAND));
+                                break;
+                            case NONE:
+                                break;
                         }
 
                         // reset fall state
-                        if (timing.getValue().equals(Timing.SEQUENTIAL)) {
-                            mc.player.fallDistance = fallDistance;
-                            mc.player.onGround = onGround;
-                        }
+                        mc.player.fallDistance = fallDistance;
+                        mc.player.onGround = onGround;
                     }
 
                     // reset sneak state
@@ -439,7 +485,7 @@ public class Aura extends Module {
                     .line(1.5F)
                     .depth(true)
                     .blend()
-                    .texture(), InterpolationUtil.getInterpolatedPos(auraTarget, 1), auraTarget.width, auraTarget.height * (0.5 * (Math.sin((mc.player.ticksExisted * 3.5) * (Math.PI / 180)) + 1)), ColorUtil.getPrimaryColor());
+                    .texture(), InterpolationUtil.getInterpolatedPosition(auraTarget, 1), auraTarget.width, auraTarget.height * (0.5 * (Math.sin((mc.player.ticksExisted * 3.5) * (Math.PI / 180)) + 1)), ColorUtil.getPrimaryColor());
         }
     }
 
@@ -454,7 +500,7 @@ public class Aura extends Module {
             new Thread(() -> {
                 // spam attacks a player when they pop a totem, useful for insta-killing people on 32k servers - thanks bon55
                 for (int i = 0; i < 5; i++) {
-                    getCosmos().getInteractionManager().attackEntity(auraTarget, true, swing.getValue(), 100);
+                    getCosmos().getInteractionManager().attackEntity(auraTarget, true, 100);
                 }
             }).start();
         }
@@ -467,21 +513,21 @@ public class Aura extends Module {
             event.setCanceled(true);
 
             // angles to the last attack
-            float[] packetAngles = AngleUtil.calculateAngles(attackVector);
+            Rotation packetAngles = AngleUtil.calculateAngles(attackVector);
 
             // add random values to our rotations to simulate vanilla rotations
             if (rotateRandom.getValue() > 0) {
                 Random randomAngle = new Random();
-                packetAngles[0] += randomAngle.nextFloat() * (randomAngle.nextBoolean() ? rotateRandom.getValue() : -rotateRandom.getValue());
+                packetAngles.setYaw(packetAngles.getYaw() + (randomAngle.nextFloat() * (randomAngle.nextBoolean() ? rotateRandom.getValue().floatValue() : -rotateRandom.getValue().floatValue())));
             }
 
             if (!rotateLimit.getValue().equals(Limit.NONE)) {
                 // difference between the new yaw and the server yaw
-                float yawDifference = MathHelper.wrapDegrees(packetAngles[0] - ((IEntityPlayerSP) mc.player).getLastReportedYaw());
+                float yawDifference = MathHelper.wrapDegrees(packetAngles.getYaw() - ((IEntityPlayerSP) mc.player).getLastReportedYaw());
 
                 // if it's greater than 55, we need to limit our yaw and skip a tick
                 if (Math.abs(yawDifference) > 55 && !yawLimit) {
-                    packetAngles[0] = ((IEntityPlayerSP) mc.player).getLastReportedYaw();
+                    packetAngles.setYaw(((IEntityPlayerSP) mc.player).getLastReportedYaw());
                     strictTicks++;
                     yawLimit = true;
                 }
@@ -490,7 +536,7 @@ public class Aura extends Module {
                 if (strictTicks <= 0) {
                     // if still need to limit our rotation, clamp them to the rotation limit
                     if (rotateLimit.getValue().equals(Limit.STRICT)) {
-                        packetAngles[0] = ((IEntityPlayerSP) mc.player).getLastReportedYaw() + (yawDifference > 0 ? Math.min(Math.abs(yawDifference), 55) : -Math.min(Math.abs(yawDifference), 55));
+                        packetAngles.setYaw(((IEntityPlayerSP) mc.player).getLastReportedYaw() + (yawDifference > 0 ? Math.min(Math.abs(yawDifference), 55) : -Math.min(Math.abs(yawDifference), 55)));
                     }
 
                     yawLimit = false;
@@ -498,7 +544,7 @@ public class Aura extends Module {
             }
 
             // add our rotation to our client rotations
-            getCosmos().getRotationManager().addRotation(new Rotation(packetAngles[0], packetAngles[1]), 1000);
+            getCosmos().getRotationManager().addRotation(new Rotation(packetAngles.getYaw(), packetAngles.getPitch()), 1000);
         }
     }
 
@@ -509,15 +555,11 @@ public class Aura extends Module {
             event.setCanceled(true);
 
             // find the angles from our interaction
-            float[] packetAngles = AngleUtil.calculateAngles(attackVector);
-            if (rotateRandom.getValue() > 0) {
-                Random randomAngle = new Random();
-                packetAngles[0] += randomAngle.nextFloat() * (randomAngle.nextBoolean() ? rotateRandom.getValue() : -rotateRandom.getValue());
-            }
+            Rotation packetAngles = AngleUtil.calculateAngles(attackVector);
 
             // set our model angles; visual
-            event.setYaw(packetAngles[0]);
-            event.setPitch(packetAngles[1]);
+            event.setYaw(packetAngles.getYaw());
+            event.setPitch(packetAngles.getPitch());
         }
     }
 
@@ -631,5 +673,46 @@ public class Aura extends Module {
          * Attack the entity at the feet
          */
         FEET
+    }
+
+    public enum Hand {
+
+        /**
+         * Swings the mainhand
+         */
+        MAINHAND,
+
+        /**
+         * Swings the offhand
+         */
+        OFFHAND,
+
+        /**
+         * Swings via packets, should be silent client-side
+         */
+        PACKET,
+
+        /**
+         * Does not swing
+         */
+        NONE
+    }
+
+    public enum Target {
+
+        /**
+         * Finds the closest entity to the player
+         */
+        CLOSEST,
+
+        /**
+         * Finds the entity with the lowest health
+         */
+        LOWEST_HEALTH,
+
+        /**
+         * Finds the entity with the lowest armor durability
+         */
+        LOWEST_ARMOR
     }
 }
