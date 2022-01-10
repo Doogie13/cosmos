@@ -86,6 +86,16 @@ public class MotionUtil implements Wrapper {
         return new double[] {motionX, motionZ};
     }
 
+    // Gets movement at a given speed in the direction supplied
+    public static double[] getMoveSpeedInDirection(double speed, float direction) {
+
+        double motionX = speed * Math.cos(Math.toRadians(direction + 90));
+        double motionZ = speed * Math.sin(Math.toRadians(direction + 90));
+
+        return new double[] {motionX, motionZ};
+
+    }
+
     public static void stopMotion(double fall) {
         Entity currentMover = mc.player.isRiding() ? mc.player.getRidingEntity() : mc.player;
 
