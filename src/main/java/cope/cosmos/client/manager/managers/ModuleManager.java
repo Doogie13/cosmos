@@ -89,6 +89,7 @@ public class ModuleManager extends Manager {
 			new ESP(),
 			new FullBright(),
 			new HoleESP(),
+			new LogoutSpots(),
 			new Nametags(),
 			new NewChunks(),
 			new NoRender(),
