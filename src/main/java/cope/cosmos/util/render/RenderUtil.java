@@ -232,6 +232,15 @@ public class RenderUtil implements Wrapper {
 		GlStateManager.shadeModel(GL_FLAT);
 	}
 
+	public static void drawNametag(Vec3d vec3d, float height, String text) {
+		GlStateManager.pushMatrix();
+		glBillboardDistanceScaled(((float) (vec3d.x + 0.5)), ((float) (vec3d.y + height)), ((float) (vec3d.z + 0.5)), mc.player, 1);
+		GlStateManager.disableDepth();
+		GlStateManager.translate(-(mc.fontRenderer.getStringWidth(text) / 2.0), 0.0, 0.0);
+		FontUtil.drawStringWithShadow(text, 0, 0, -1);
+		GlStateManager.popMatrix();
+	}
+
 	public static void drawNametag(BlockPos blockPos, float height, String text) {
 		GlStateManager.pushMatrix();
 		glBillboardDistanceScaled(blockPos.getX() + 0.5f, blockPos.getY() + height, blockPos.getZ() + 0.5f, mc.player, 1);
